@@ -1,5 +1,6 @@
 #!/bin/bash
-# Gentoo update script - auto-fixes USE flags, de-dups, retries dry-run
+# Gentoo update script - auto USE fixes + cachyos-sources rebuild only when new/upgrade available
+# NO GRUB - assumes make install rebuilds initramfs automatically
 # Uses doas - run as normal user
 
 set -euo pipefail
@@ -10,6 +11,9 @@ USE_FILE="${USE_DIR}/99-update-script"
 BACKUP_SUFFIX=".backup.$(date +%Y%m%d-%H%M%S)"
 MAX_BACKTRACK=30
 MAX_RETRIES=5
+
+# Your custom kernel
+KERNEL_PKG="sys-kernel/cachyos-sources"
 
 # ----- Colors -----
 RED='\033[0;31m'
@@ -33,7 +37,7 @@ command -v doas >/dev/null || {
 }
 doas mkdir -p "$USE_DIR"
 
-# Backup if exists
+# Backup
 [[ -f "$USE_FILE" ]] && doas cp "$USE_FILE" "${USE_FILE}${BACKUP_SUFFIX}" && log "Backed up $USE_FILE"
 
 # ----- Extract and apply USE changes -----
@@ -42,37 +46,34 @@ apply_use_changes() {
   local new_changes
   new_changes=$(echo "$output" |
     sed -n '/The following USE changes are necessary to proceed/,/^\[/p' |
-    grep -E '^[>=<]' | # Lines starting with =, >, < (package atoms)
-    sort -u)
+    grep -E '^[>=<]' | sort -u)
 
   [[ -z "$new_changes" ]] && {
-    warn "No valid USE changes found in output."
+    warn "No USE changes detected."
     return 1
   }
 
-  info "Detected USE changes to apply:"
+  info "Required USE changes:"
   echo "$new_changes" | sed 's/^/  /'
 
   warn "Apply to $USE_FILE (de-duped)? (y/N)"
   read -r ans
   [[ ! "$ans" =~ ^[Yy]$ ]] && {
-    log "Declined. Aborting."
+    log "Declined."
     return 2
   }
 
-  # Combine with existing, de-dup
   local existing=""
-  [[ -f "$USE_FILE" ]] && existing=$(grep -E '^[>=<]' "$USE_FILE" | sort -u) # Only package lines
-
+  [[ -f "$USE_FILE" ]] && existing=$(grep -E '^[>=<]' "$USE_FILE" | sort -u)
   local all_changes
   all_changes=$(echo -e "$new_changes\n$existing" | sort -u | grep -v '^$')
 
-  log "Applying de-duped USE flags to $USE_FILE"
+  log "Applying de-duped USE flags..."
   {
     printf '# === Auto-applied by `update` on %s ===\n' "$(date)"
     echo "$all_changes"
     printf '# =======================================\n\n'
-  } | doas tee "$USE_FILE" >/dev/null # Overwrite with de-duped
+  } | doas tee "$USE_FILE" >/dev/null
 
   return 0
 }
@@ -121,23 +122,23 @@ done
   exit 1
 }
 
-# ----- Confirm -----
-warn "Proceed with update? (y/N)"
+# ----- Confirm update -----
+warn "Proceed with system update? (y/N)"
 read -r ans
 [[ ! "$ans" =~ ^[Yy]$ ]] && {
-  log "Cancelled."
+  log "Update cancelled."
   exit 0
 }
 
-# ----- Update -----
+# ----- Real update -----
 log "Updating @world..."
 doas emerge -uDN --with-bdeps=y --backtrack=$MAX_BACKTRACK @world || {
   error "emerge failed."
   exit 1
 }
 
-# ----- Post -----
-log "Config files..."
+# ----- Config & cleanup -----
+log "Handling config files..."
 doas dispatch-conf || warn "dispatch-conf issues."
 
 log "Depclean..."
@@ -146,4 +147,81 @@ doas emerge --depclean || warn "depclean warnings."
 log "GLSA check..."
 doas glsa-check --list --nocolor | grep -v "No affected" || true
 
-log "Update complete! Reboot if needed."
+# ----- Rebuild cachyos-sources kernel only if new/upgrade available (NO GRUB) -----
+rebuild_cachyos_kernel() {
+  log "Checking for $KERNEL_PKG update..."
+  if ! doas emerge -pv "$KERNEL_PKG" | grep -q "^\[ebuild.*[NU].*\]"; then
+    log "No update for $KERNEL_PKG. Skipping kernel rebuild."
+    return
+  fi
+
+  warn "Update available for $KERNEL_PKG! Rebuild kernel now? (y/N)"
+  read -r ans
+  [[ ! "$ans" =~ ^[Yy]$ ]] && {
+    log "Kernel rebuild skipped."
+    return
+  }
+
+  log "Installing updated kernel sources..."
+  doas emerge -1 "$KERNEL_PKG" || {
+    error "Failed to install $KERNEL_PKG."
+    return
+  }
+
+  local src_dir="/usr/src/linux"
+  [[ ! -d "$src_dir" ]] && {
+    error "Kernel source dir $src_dir not found."
+    return
+  }
+
+  cd "$src_dir" || {
+    error "Cannot cd to $src_dir."
+    return
+  }
+
+  log "Copying config..."
+  doas zcat /proc/config.gz >.config || {
+    error "Config copy failed."
+    return
+  }
+
+  log "Running make olddefconfig..."
+  doas make olddefconfig || {
+    error "olddefconfig failed."
+    return
+  }
+
+  log "Building kernel..."
+  doas make || {
+    error "make failed."
+    return
+  }
+
+  log "Rebuilding modules..."
+  doas emerge --ask @module-rebuild || {
+    error "@module-rebuild failed."
+    return
+  }
+
+  log "Installing modules..."
+  doas make modules_install || {
+    error "modules_install failed."
+    return
+  }
+
+  log "Installing kernel..."
+  doas make install || {
+    error "install failed."
+    return
+  }
+
+  log "cachyos-sources kernel rebuilt and installed!"
+  warn "REBOOT REQUIRED."
+}
+
+# Run kernel rebuild
+rebuild_cachyos_kernel
+
+# ----- Final -----
+log "Update complete!"
+warn "Reboot if kernel was rebuilt or critical packages updated."
