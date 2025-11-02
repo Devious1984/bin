@@ -147,7 +147,7 @@ doas emerge --depclean || warn "depclean warnings."
 log "GLSA check..."
 doas glsa-check --list --nocolor | grep -v "No affected" || true
 
-# ----- Rebuild cachyos-sources kernel only if new/upgrade available (NO GRUB) -----
+# ----- Rebuild cachyos-sources kernel only if new/upgrade available -----
 rebuild_cachyos_kernel() {
   log "Checking for $KERNEL_PKG update..."
   if ! doas emerge -pv "$KERNEL_PKG" | grep -q "^\[ebuild.*[NU].*\]"; then
