@@ -1,7 +1,7 @@
 #!/bin/bash
 # Gentoo update script - auto USE fixes + cachyos-sources rebuild only when new/upgrade available
-# NO GRUB - assumes make install rebuilds initramfs automatically
-# Uses doas - run as normal user
+# assumes use of grub + dracut for initramfs
+# Uses doas instead of sudo - run as normal user
 
 set -euo pipefail
 
