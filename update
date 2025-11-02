@@ -1,0 +1,149 @@
+#!/bin/bash
+# Gentoo update script - auto-fixes USE flags, de-dups, retries dry-run
+# Uses doas - run as normal user
+
+set -euo pipefail
+
+# ----- Config -----
+USE_DIR="/etc/portage/package.use"
+USE_FILE="${USE_DIR}/99-update-script"
+BACKUP_SUFFIX=".backup.$(date +%Y%m%d-%H%M%S)"
+MAX_BACKTRACK=30
+MAX_RETRIES=5
+
+# ----- Colors -----
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+log() { echo -e "${GREEN}[*]${NC} $*"; }
+warn() { echo -e "${YELLOW}[!]${NC} $*"; }
+error() { echo -e "${RED}[X]${NC} $*" >&2; }
+info() { echo -e "${BLUE}[i]${NC} $*"; }
+
+# ----- Checks -----
+[[ $EUID -eq 0 ]] && {
+  error "Do not run as root."
+  exit 1
+}
+command -v doas >/dev/null || {
+  error "doas not found."
+  exit 1
+}
+doas mkdir -p "$USE_DIR"
+
+# Backup if exists
+[[ -f "$USE_FILE" ]] && doas cp "$USE_FILE" "${USE_FILE}${BACKUP_SUFFIX}" && log "Backed up $USE_FILE"
+
+# ----- Extract and apply USE changes -----
+apply_use_changes() {
+  local output="$1"
+  local new_changes
+  new_changes=$(echo "$output" |
+    sed -n '/The following USE changes are necessary to proceed/,/^\[/p' |
+    grep -E '^[>=<]' | # Lines starting with =, >, < (package atoms)
+    sort -u)
+
+  [[ -z "$new_changes" ]] && {
+    warn "No valid USE changes found in output."
+    return 1
+  }
+
+  info "Detected USE changes to apply:"
+  echo "$new_changes" | sed 's/^/  /'
+
+  warn "Apply to $USE_FILE (de-duped)? (y/N)"
+  read -r ans
+  [[ ! "$ans" =~ ^[Yy]$ ]] && {
+    log "Declined. Aborting."
+    return 2
+  }
+
+  # Combine with existing, de-dup
+  local existing=""
+  [[ -f "$USE_FILE" ]] && existing=$(grep -E '^[>=<]' "$USE_FILE" | sort -u) # Only package lines
+
+  local all_changes
+  all_changes=$(echo -e "$new_changes\n$existing" | sort -u | grep -v '^$')
+
+  log "Applying de-duped USE flags to $USE_FILE"
+  {
+    printf '# === Auto-applied by `update` on %s ===\n' "$(date)"
+    echo "$all_changes"
+    printf '# =======================================\n\n'
+  } | doas tee "$USE_FILE" >/dev/null # Overwrite with de-duped
+
+  return 0
+}
+
+# ----- Sync & news -----
+log "Syncing Portage..."
+doas emaint --auto sync || {
+  error "Sync failed."
+  exit 1
+}
+
+log "Checking news..."
+doas eselect news read new 2>/dev/null || true
+
+# ----- Dry-run loop -----
+retry=0
+while ((retry < MAX_RETRIES)); do
+  log "Dry-run (attempt $((retry + 1)))..."
+  DRY_CMD=(doas emerge -pvDuN --with-bdeps=y --backtrack=$MAX_BACKTRACK @world)
+
+  if DRY_OUT=$("${DRY_CMD[@]}" 2>&1); then
+    echo "$DRY_OUT"
+    log "Dry-run clean."
+    break
+  else
+    echo "$DRY_OUT"
+
+    if echo "$DRY_OUT" | grep -q "The following USE changes are necessary"; then
+      if apply_use_changes "$DRY_OUT"; then
+        ((retry++))
+        continue
+      else
+        [[ $? == 2 ]] && exit 0
+        error "Failed to apply USE changes."
+        exit 1
+      fi
+    else
+      error "Dry-run failed (not USE issue). Aborting."
+      exit 1
+    fi
+  fi
+done
+
+((retry >= MAX_RETRIES)) && {
+  error "Too many retries."
+  exit 1
+}
+
+# ----- Confirm -----
+warn "Proceed with update? (y/N)"
+read -r ans
+[[ ! "$ans" =~ ^[Yy]$ ]] && {
+  log "Cancelled."
+  exit 0
+}
+
+# ----- Update -----
+log "Updating @world..."
+doas emerge -uDN --with-bdeps=y --backtrack=$MAX_BACKTRACK @world || {
+  error "emerge failed."
+  exit 1
+}
+
+# ----- Post -----
+log "Config files..."
+doas dispatch-conf || warn "dispatch-conf issues."
+
+log "Depclean..."
+doas emerge --depclean || warn "depclean warnings."
+
+log "GLSA check..."
+doas glsa-check --list --nocolor | grep -v "No affected" || true
+
+log "Update complete! Reboot if needed."
