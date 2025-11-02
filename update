@@ -181,6 +181,24 @@ rebuild_cachyos_kernel() {
     return
   }
 
+  # List available kernels
+  log "Available kernels:"
+  eselect kernel list
+
+  # Prompt for kernel number
+  warn "Enter the kernel number to set (e.g., 2):"
+  read -r kernel_num
+  [[ -z "$kernel_num" ]] && {
+    error "No number entered. Aborting kernel rebuild."
+    return
+  }
+
+  log "Setting kernel to $kernel_num..."
+  doas eselect kernel set "$kernel_num" || {
+    error "eselect kernel set failed."
+    return
+  }
+
   local src_dir="/usr/src/linux"
   [[ ! -d "$src_dir" ]] && {
     error "Kernel source dir $src_dir not found."
@@ -192,12 +210,6 @@ rebuild_cachyos_kernel() {
     return
   }
 
-  log "Kernel distclean..."
-  doas make distclean || {
-    error "distclean failed."
-    return
-  }
-
   log "Copying config..."
   doas zcat /proc/config.gz | doas tee /usr/src/linux/.config || {
     error "Config copy failed."
@@ -205,13 +217,13 @@ rebuild_cachyos_kernel() {
   }
 
   log "Running make olddefconfig..."
-  doas make olddefconfig || {
+  doas make oldconfig || {
     error "olddefconfig failed."
     return
   }
 
   log "Building kernel..."
-  doas make || {
+  doas make -j12 || {
     error "make failed."
     return
   }
@@ -243,4 +255,3 @@ rebuild_cachyos_kernel
 
 # ----- Final -----
 log "Update complete!"
-warn "Reboot if kernel was rebuilt or critical packages updated."
