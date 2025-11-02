@@ -147,6 +147,19 @@ doas emerge --depclean || warn "depclean warnings."
 log "GLSA check..."
 doas glsa-check --list --nocolor | grep -v "No affected" || true
 
+# ----- UPDATE FLATPAK (if installed) -----
+update_flatpak() {
+  if command -v flatpak >/dev/null 2>&1; then
+    log "Updating Flatpak packages..."
+    flatpak update -y || warn "Flatpak update failed or was skipped."
+  else
+    log "Flatpak not installed. Skipping."
+  fi
+}
+
+# Run Flatpak update
+update_flatpak
+
 # ----- Rebuild cachyos-sources kernel only if new/upgrade available -----
 rebuild_cachyos_kernel() {
   log "Checking for $KERNEL_PKG update..."
