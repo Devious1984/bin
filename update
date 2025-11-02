@@ -192,6 +192,12 @@ rebuild_cachyos_kernel() {
     return
   }
 
+  log "Kernel distclean..."
+  doas make distclean || {
+    error "distclean failed."
+    return
+  }
+
   log "Copying config..."
   doas zcat /proc/config.gz | doas tee /usr/src/linux/.config || {
     error "Config copy failed."
