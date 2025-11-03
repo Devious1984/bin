@@ -88,6 +88,9 @@ doas emaint --auto sync || {
 log "Checking news..."
 doas eselect news read new 2>/dev/null || true
 
+log "GLSA check..."
+doas glsa-check --list --nocolor | grep -v "No affected" || true
+
 # ----- Dry-run loop -----
 retry=0
 while ((retry < MAX_RETRIES)); do
@@ -143,9 +146,6 @@ doas dispatch-conf || warn "dispatch-conf issues."
 
 log "Depclean..."
 doas emerge --depclean || warn "depclean warnings."
-
-log "GLSA check..."
-doas glsa-check --list --nocolor | grep -v "No affected" || true
 
 # ----- UPDATE FLATPAK (if installed) -----
 update_flatpak() {
