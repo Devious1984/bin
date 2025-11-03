@@ -1,6 +1,5 @@
 #!/bin/bash
-# Gentoo update script - auto USE fixes + cachyos-sources rebuild only when new/upgrade available
-# assumes use of grub + dracut for initramfs
+# Gentoo update script
 # Uses doas instead of sudo - run as normal user
 
 set -euo pipefail
@@ -11,9 +10,6 @@ USE_FILE="${USE_DIR}/99-update-script"
 BACKUP_SUFFIX=".backup.$(date +%Y%m%d-%H%M%S)"
 MAX_BACKTRACK=30
 MAX_RETRIES=5
-
-# Your custom kernel
-KERNEL_PKG="sys-kernel/cachyos-sources"
 
 # ----- Colors -----
 RED='\033[0;31m'
@@ -159,99 +155,6 @@ update_flatpak() {
 
 # Run Flatpak update
 update_flatpak
-
-# ----- Rebuild cachyos-sources kernel only if new/upgrade available -----
-rebuild_cachyos_kernel() {
-  log "Checking for $KERNEL_PKG update..."
-  if ! doas emerge -pv "$KERNEL_PKG" | grep -q "^\[ebuild.*[NU].*\]"; then
-    log "No update for $KERNEL_PKG. Skipping kernel rebuild."
-    return
-  fi
-
-  warn "Update available for $KERNEL_PKG! Rebuild kernel now? (y/N)"
-  read -r ans
-  [[ ! "$ans" =~ ^[Yy]$ ]] && {
-    log "Kernel rebuild skipped."
-    return
-  }
-
-  log "Installing updated kernel sources..."
-  doas emerge -1 "$KERNEL_PKG" || {
-    error "Failed to install $KERNEL_PKG."
-    return
-  }
-
-  # List available kernels
-  log "Available kernels:"
-  eselect kernel list
-
-  # Prompt for kernel number
-  warn "Enter the kernel number to set (e.g., 2):"
-  read -r kernel_num
-  [[ -z "$kernel_num" ]] && {
-    error "No number entered. Aborting kernel rebuild."
-    return
-  }
-
-  log "Setting kernel to $kernel_num..."
-  doas eselect kernel set "$kernel_num" || {
-    error "eselect kernel set failed."
-    return
-  }
-
-  local src_dir="/usr/src/linux"
-  [[ ! -d "$src_dir" ]] && {
-    error "Kernel source dir $src_dir not found."
-    return
-  }
-
-  cd "$src_dir" || {
-    error "Cannot cd to $src_dir."
-    return
-  }
-
-  log "Copying config..."
-  doas zcat /proc/config.gz | doas tee /usr/src/linux/.config || {
-    error "Config copy failed."
-    return
-  }
-
-  log "Running make olddefconfig..."
-  doas make oldconfig || {
-    error "olddefconfig failed."
-    return
-  }
-
-  log "Building kernel..."
-  doas make -j12 || {
-    error "make failed."
-    return
-  }
-
-  log "Rebuilding modules..."
-  doas emerge --ask @module-rebuild || {
-    error "@module-rebuild failed."
-    return
-  }
-
-  log "Installing modules..."
-  doas make modules_install || {
-    error "modules_install failed."
-    return
-  }
-
-  log "Installing kernel..."
-  doas make install || {
-    error "install failed."
-    return
-  }
-
-  log "cachyos-sources kernel rebuilt and installed!"
-  warn "REBOOT REQUIRED."
-}
-
-# Run kernel rebuild
-rebuild_cachyos_kernel
 
 # ----- Final -----
 log "Update complete!"
