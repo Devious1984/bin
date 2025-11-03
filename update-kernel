@@ -1,0 +1,73 @@
+#!/bin/bash
+# CachyOS Kernel upgrade script for Gentoo
+# Uses doas instead of sudo - run as normal user
+
+set -euo pipefail
+
+# ----- Config -----
+KERNEL_DIR="/usr/src/linux"
+CONFIG_FILE="${KERNEL_DIR}/.config"
+JOBS=12
+
+# ----- Colors -----
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+log() { echo -e "${GREEN}[*]${NC} $*"; }
+warn() { echo -e "${YELLOW}[!]${NC} $*"; }
+error() { echo -e "${RED}[X]${NC} $*" >&2; }
+info() { echo -e "${BLUE}[i]${NC} $*"; }
+
+# ----- Checks -----
+[[ $EUID -eq 0 ]] && {
+  error "Do not run as root."
+  exit 1
+}
+command -v doas >/dev/null || {
+  error "doas not found."
+  exit 1
+}
+[[ -d "$KERNEL_DIR" ]] || {
+  error "Kernel directory $KERNEL_DIR not found."
+  exit 1
+}
+
+# ----- Confirm upgrade -----
+warn "Proceed with kernel upgrade? (y/N)"
+read -r ans
+[[ ! "$ans" =~ ^[Yy]$ ]] && {
+  log "Upgrade cancelled."
+  exit 0
+}
+
+# ----- Kernel upgrade -----
+log "Changing to kernel directory..."
+cd "$KERNEL_DIR"
+
+log "Copying current config..."
+doas zcat /proc/config.gz | doas tee "$CONFIG_FILE"
+
+log "Preparing olddefconfig..."
+doas make olddefconfig
+
+log "Compiling kernel..."
+doas LLVM=1 make -j"$JOBS"
+
+log "Installing modules..."
+doas make modules_install
+
+log "Installing kernel..."
+doas make install
+
+# ----- Final -----
+log "Kernel upgrade complete!"
+
+# ----- Reboot option -----
+warn "Reboot now? (y/N)"
+read -r ans
+[[ "$ans" =~ ^[Yy]$ ]] && {
+  log "Rebooting..."
+  doas reboot
+}
