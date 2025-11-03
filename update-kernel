@@ -1,5 +1,5 @@
 #!/bin/bash
-# CachyOS Kernel upgrade script for Gentoo
+# Kernel upgrade script for Gentoo
 # Uses doas instead of sudo - run as normal user
 
 set -euo pipefail
@@ -53,7 +53,7 @@ log "Preparing olddefconfig..."
 doas make olddefconfig
 
 log "Compiling kernel..."
-doas LLVM=1 make -j"$JOBS"
+doas make -j"$JOBS"
 
 log "Installing modules..."
 doas make modules_install
