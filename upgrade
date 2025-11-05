@@ -188,7 +188,7 @@ if [[ $EUID -eq 0 ]]; then
   exit 1
 fi
 
-# Check if doas is configured
+# Check if doas is configured and authenticate once
 if ! doas true 2>/dev/null; then
   error "doas not working. Check configuration."
   exit 1
@@ -471,6 +471,18 @@ if $DO_PACKAGES; then
       fi
     fi
   fi
+
+  # Update Flatpak packages
+  if command -v flatpak &>/dev/null; then
+    log "Updating Flatpak packages..."
+    if flatpak update -y 2>&1 | tee -a "$LOG_FILE"; then
+      log "Flatpak packages updated successfully."
+    else
+      warn "Flatpak update had issues (may be normal if no flatpaks installed)."
+    fi
+  else
+    info "Flatpak not installed, skipping."
+  fi
 fi
 
 # ----- Kernel upgrade -----
@@ -505,21 +517,33 @@ fi
 # ----- Final summary -----
 section "Upgrade Complete!"
 
+TOTAL_START=${START_TIME:-$(date +%s)}
+TOTAL_END=$(date +%s)
+TOTAL_ELAPSED=$((TOTAL_END - TOTAL_START))
+TOTAL_MINUTES=$((TOTAL_ELAPSED / 60))
+TOTAL_SECONDS=$((TOTAL_ELAPSED % 60))
+
+echo
+log "========== UPGRADE SUMMARY =========="
 if $DO_PACKAGES; then
-  log "✓ Packages updated: $PACKAGE_COUNT"
-  log "✓ Time taken: $((ELAPSED / 60))m ${ELAPSED% 60}s"
+  log "✓ Packages upgraded: ${PACKAGE_COUNT:-0}"
+  if [[ -n "${DOWNLOAD_SIZE:-}" ]]; then
+    log "✓ Data downloaded: $DOWNLOAD_SIZE"
+  fi
 fi
 
 if $DO_KERNEL; then
-  log "✓ Kernel upgraded to: $(ls -t /boot/vmlinuz-* | head -1 | sed 's|/boot/vmlinuz-||')"
+  NEW_KERNEL_VERSION=$(ls -t /boot/vmlinuz-* 2>/dev/null | head -1 | sed 's|/boot/vmlinuz-||' || echo "Unknown")
+  log "✓ Kernel upgraded: $NEW_KERNEL_VERSION"
 fi
 
+log "✓ Total time: ${TOTAL_MINUTES}m ${TOTAL_SECONDS}s"
 log "✓ Full log: $LOG_FILE"
+echo
 
 # Show what to do next
 NEXT_STEPS=()
 [[ ${PRESERVED_COUNT:-0} -gt 0 ]] && NEXT_STEPS+=("doas emerge @preserved-rebuild")
-[[ ${DEPCLEAN_COUNT:-0} -gt 0 ]] && NEXT_STEPS+=("doas emerge --depclean")
 [[ -n $(find /etc -name '._cfg????_*' 2>/dev/null) ]] && NEXT_STEPS+=("doas dispatch-conf")
 
 if [[ ${#NEXT_STEPS[@]} -gt 0 ]]; then
@@ -527,7 +551,11 @@ if [[ ${#NEXT_STEPS[@]} -gt 0 ]]; then
   for step in "${NEXT_STEPS[@]}"; do
     info "  - $step"
   done
+  echo
 fi
+
+log "All done! 🎉"
+echo
 
 # ----- Reboot option -----
 if $REBOOT_NEEDED; then
@@ -542,5 +570,3 @@ if $REBOOT_NEEDED; then
     warn "Remember to reboot when convenient!"
   fi
 fi
-
-log "All done! 🎉"
